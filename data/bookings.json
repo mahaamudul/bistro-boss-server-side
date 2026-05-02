@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Demo Guest",
+    "email": "demo@bistroboss.test",
+    "date": "2026-05-03",
+    "time": "19:30",
+    "guests": 3,
+    "phone": "01700000000",
+    "notes": "Window seat",
+    "status": "pending",
+    "createdAt": "2026-05-02T09:04:10.520Z",
+    "_id": "local-booking-1777712650522-u9290czd"
+  },
+  {
+    "name": "Mahamudul Hasan Mehdi",
+    "email": "mehedi@gmail.com",
+    "date": "2026-05-02",
+    "time": "19:00",
+    "guests": 2,
+    "phone": "01717314816",
+    "notes": "",
+    "status": "pending",
+    "createdAt": "2026-05-02T09:33:34.157Z",
+    "_id": "local-booking-1777714414166-hsf9m2de"
+  },
+  {
+    "name": "ksk",
+    "email": "mehedi@gmail.com",
+    "date": "2026-05-02",
+    "time": "19:00",
+    "guests": 2,
+    "phone": "01717314816",
+    "notes": "",
+    "status": "pending",
+    "createdAt": "2026-05-02T09:51:48.671Z",
+    "_id": "local-booking-1777715508671-urf8p7jz"
+  }
+]
