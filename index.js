@@ -10,9 +10,28 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 5000;
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const DEV_ADMIN_EMAIL = "admin@gmail.com";
+const SETTINGS_ID = "restaurant-profile";
+
+const defaultRestaurantSettingsFields = {
+  restaurantName: "Forkly",
+  tagline: "Modern dining, warm service",
+  phone: "+1 555 013 4567",
+  email: "hello@forkly.com",
+  address: "123 Flavor Street, New York, NY",
+  openingHours: "Daily: 10:00 AM - 11:00 PM",
+  kitchenHours: "Kitchen closes at 10:30 PM",
+  reservationNotice: "Reservations are reviewed by the Forkly team before confirmation.",
+  maxReservationGuests: 20,
+};
+const defaultRestaurantSettings = {
+  _id: SETTINGS_ID,
+  ...defaultRestaurantSettingsFields,
+};
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "12mb" }));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const defaultMongoHosts = [
   "ac-6w3swfs-shard-00-00.crlsfbw.mongodb.net:27017",
@@ -65,6 +84,12 @@ const sortBookings = (bookings) =>
     )
   );
 
+const startOfToday = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+};
+
 async function run() {
   try {
     const db = client.db("bistroBossDB");
@@ -74,6 +99,7 @@ async function run() {
     const usersCollection = db.collection("users");
     const paymentCollection = db.collection("payments");
     const bookingsCollection = db.collection("bookings");
+    const settingsCollection = db.collection("settings");
 
     const verifyToken = (req, res, next) => {
       const authorization = req.headers.authorization;
@@ -94,6 +120,10 @@ async function run() {
     };
 
     const isAdminEmail = async (email) => {
+      if (email === DEV_ADMIN_EMAIL) {
+        return true;
+      }
+
       if (!isMongoConnected) {
         return false;
       }
@@ -124,13 +154,79 @@ async function run() {
       res.send({ token });
     });
 
+    app.post("/menu-images", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { image, fileName = "menu-item" } = req.body;
+        const imageMatch = String(image || "").match(
+          /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.+)$/
+        );
+
+        if (!imageMatch) {
+          return res.status(400).send({
+            message: "A valid PNG, JPG, WEBP, or GIF image is required",
+          });
+        }
+
+        const mimeType = imageMatch[1];
+        const extensionByMimeType = {
+          "image/png": "png",
+          "image/jpeg": "jpg",
+          "image/jpg": "jpg",
+          "image/webp": "webp",
+          "image/gif": "gif",
+        };
+        const extension = extensionByMimeType[mimeType];
+        const imageBuffer = Buffer.from(imageMatch[2], "base64");
+        const maxImageSize = 5 * 1024 * 1024;
+
+        if (!extension || imageBuffer.length > maxImageSize) {
+          return res.status(400).send({
+            message: "Image must be one of PNG, JPG, WEBP, or GIF and under 5MB",
+          });
+        }
+
+        const safeName =
+          path
+            .parse(fileName)
+            .name.replace(/[^a-z0-9-]/gi, "-")
+            .replace(/-+/g, "-")
+            .replace(/^-|-$/g, "")
+            .toLowerCase()
+            .slice(0, 60) || "menu-item";
+        const storedFileName = `${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}-${safeName}.${extension}`;
+        const uploadDir = path.join(__dirname, "uploads", "menu");
+        const uploadPath = path.join(uploadDir, storedFileName);
+
+        await fs.mkdir(uploadDir, { recursive: true });
+        await fs.writeFile(uploadPath, imageBuffer);
+
+        res.send({
+          imageUrl: `${req.protocol}://${req.get("host")}/uploads/menu/${storedFileName}`,
+        });
+      } catch (error) {
+        res.status(500).send({
+          message: "failed to upload menu image",
+          error: error.message,
+        });
+      }
+    });
+
     app.get("/menu", async (req, res) => {
       const result = await menuCollection.find().toArray();
       res.send(result);
     });
 
     app.post("/menu", verifyToken, verifyAdmin, async (req, res) => {
-      const result = await menuCollection.insertOne(req.body);
+      const menuItem = {
+        ...req.body,
+        status: req.body.status || "active",
+        featured: Boolean(req.body.featured),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      const result = await menuCollection.insertOne(menuItem);
       res.send(result);
     });
 
@@ -158,6 +254,9 @@ async function run() {
           price: item.price,
           recipe: item.recipe,
           image: item.image,
+          status: item.status || "active",
+          featured: Boolean(item.featured),
+          updatedAt: new Date(),
         },
       };
 
@@ -176,18 +275,109 @@ async function run() {
     });
 
     app.get("/reviews", async (req, res) => {
-      const result = await reviewsCollection.find().toArray();
+      const result = await reviewsCollection
+        .find({
+          $or: [{ status: "approved" }, { status: { $exists: false } }],
+        })
+        .sort({ _id: -1 })
+        .toArray();
       res.send(result);
     });
 
     app.post("/reviews", verifyToken, async (req, res) => {
-      const review = req.body;
+      const review = {
+        name: req.body.name,
+        email: req.body.email,
+        rating: Number(req.body.rating),
+        details: req.body.details,
+        status: "pending",
+        featured: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
       if (review.email !== req.decoded.email) {
         return res.status(403).send({ message: "forbidden access" });
       }
 
       const result = await reviewsCollection.insertOne(review);
       res.send(result);
+    });
+
+    app.get("/admin/reviews", verifyToken, verifyAdmin, async (req, res) => {
+      const result = await reviewsCollection.find().sort({ _id: -1 }).toArray();
+      res.send(result);
+    });
+
+    app.patch("/reviews/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = toObjectId(req.params.id);
+      if (!id) {
+        return res.status(400).send({ message: "invalid review id" });
+      }
+
+      const allowedStatuses = ["pending", "approved", "hidden"];
+      const update = {
+        updatedAt: new Date(),
+      };
+
+      if (allowedStatuses.includes(req.body.status)) {
+        update.status = req.body.status;
+      }
+
+      if (typeof req.body.featured === "boolean") {
+        update.featured = req.body.featured;
+      }
+
+      const result = await reviewsCollection.updateOne({ _id: id }, { $set: update });
+      res.send(result);
+    });
+
+    app.delete("/reviews/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = toObjectId(req.params.id);
+      if (!id) {
+        return res.status(400).send({ message: "invalid review id" });
+      }
+
+      const result = await reviewsCollection.deleteOne({ _id: id });
+      res.send(result);
+    });
+
+    app.get("/admin/settings", verifyToken, verifyAdmin, async (req, res) => {
+      const settings = await settingsCollection.findOne({ _id: SETTINGS_ID });
+      res.send({ ...defaultRestaurantSettings, ...settings });
+    });
+
+    app.patch("/admin/settings", verifyToken, verifyAdmin, async (req, res) => {
+      const maxReservationGuests = Number(req.body.maxReservationGuests);
+      const settings = {
+        restaurantName: req.body.restaurantName || defaultRestaurantSettings.restaurantName,
+        tagline: req.body.tagline || defaultRestaurantSettings.tagline,
+        phone: req.body.phone || defaultRestaurantSettings.phone,
+        email: req.body.email || defaultRestaurantSettings.email,
+        address: req.body.address || defaultRestaurantSettings.address,
+        openingHours: req.body.openingHours || defaultRestaurantSettings.openingHours,
+        kitchenHours: req.body.kitchenHours || defaultRestaurantSettings.kitchenHours,
+        reservationNotice:
+          req.body.reservationNotice || defaultRestaurantSettings.reservationNotice,
+        maxReservationGuests:
+          Number.isFinite(maxReservationGuests) && maxReservationGuests > 0
+            ? maxReservationGuests
+            : defaultRestaurantSettings.maxReservationGuests,
+        updatedAt: new Date(),
+      };
+
+      const result = await settingsCollection.updateOne(
+        { _id: SETTINGS_ID },
+        {
+          $set: settings,
+          $setOnInsert: {
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+
+      res.send({ ...result, settings: { ...defaultRestaurantSettings, ...settings } });
     });
 
     app.get("/carts", verifyToken, async (req, res) => {
@@ -224,7 +414,11 @@ async function run() {
     });
 
     app.post("/users", async (req, res) => {
-      const user = req.body;
+      const user = {
+        ...req.body,
+        role: req.body.role || "customer",
+        createdAt: req.body.createdAt || new Date(),
+      };
       const existingUser = await usersCollection.findOne({ email: user.email });
 
       if (existingUser) {
@@ -452,6 +646,58 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/admin/payments", verifyToken, verifyAdmin, async (req, res) => {
+      const search = req.query.search?.trim();
+      const query = search
+        ? {
+            $or: [
+              { email: { $regex: search, $options: "i" } },
+              { transactionId: { $regex: search, $options: "i" } },
+            ],
+          }
+        : {};
+
+      const result = await paymentCollection
+        .find(query)
+        .sort({ _id: -1 })
+        .toArray();
+
+      res.send(result);
+    });
+
+    app.get("/admin/recent-activity", verifyToken, verifyAdmin, async (req, res) => {
+      const [recentBookings, recentPayments, recentUsers] = await Promise.all([
+        bookingsCollection.find().sort({ _id: -1 }).limit(5).toArray(),
+        paymentCollection.find().sort({ _id: -1 }).limit(5).toArray(),
+        usersCollection.find().sort({ _id: -1 }).limit(5).toArray(),
+      ]);
+
+      res.send({
+        recentBookings,
+        recentPayments,
+        recentUsers,
+      });
+    });
+
+    app.get("/admin/bookings-summary", verifyToken, verifyAdmin, async (req, res) => {
+      const today = startOfToday().toISOString().slice(0, 10);
+
+      const [allBookings, todayBookings, pendingBookings, confirmedBookings] =
+        await Promise.all([
+          bookingsCollection.estimatedDocumentCount(),
+          bookingsCollection.countDocuments({ date: today }),
+          bookingsCollection.countDocuments({ status: "pending" }),
+          bookingsCollection.countDocuments({ status: "confirmed" }),
+        ]);
+
+      res.send({
+        allBookings,
+        todayBookings,
+        pendingBookings,
+        confirmedBookings,
+      });
+    });
+
     app.post("/payment", verifyToken, async (req, res) => {
       const payment = req.body;
       if (payment.email !== req.decoded.email) {
@@ -502,6 +748,35 @@ async function run() {
       await client.connect();
       await client.db("admin").command({ ping: 1 });
       isMongoConnected = true;
+      await usersCollection.updateOne(
+        { email: DEV_ADMIN_EMAIL },
+        {
+          $set: {
+            name: "Forkly Admin",
+            email: DEV_ADMIN_EMAIL,
+            role: "admin",
+            authProvider: "local-dev",
+            updatedAt: new Date(),
+          },
+          $setOnInsert: {
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+      await settingsCollection.updateOne(
+        { _id: SETTINGS_ID },
+        {
+          $setOnInsert: {
+            ...defaultRestaurantSettingsFields,
+            createdAt: new Date(),
+          },
+          $set: {
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
       console.log("Connected to MongoDB");
     } catch (error) {
       isMongoConnected = false;
@@ -516,9 +791,21 @@ async function run() {
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
-  res.send("Bistro Boss Server is Running");
+  res.send("Forkly Server is Running");
 });
 
-app.listen(port, () => {
-  console.log(`server is running in port ${port}`);
+const server = app.listen(port, () => {
+  console.log(`Forkly backend is running on http://localhost:${port}`);
+});
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.log("");
+    console.log(`Port ${port} is already in use.`);
+    console.log("Run `npm run dev` to stop the old backend and start a fresh one.");
+    console.log("Or run `npm run stop` first, then `npm start`.");
+    process.exit(1);
+  }
+
+  throw error;
 });
