@@ -8,7 +8,7 @@ const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = Number(process.env.PORT) || 5000;
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const DEV_ADMIN_EMAIL = "admin@gmail.com";
 const SETTINGS_ID = "restaurant-profile";
@@ -29,7 +29,25 @@ const defaultRestaurantSettings = {
   ...defaultRestaurantSettingsFields,
 };
 
-app.use(cors());
+const allowedOrigins = [process.env.CLIENT_URL, process.env.CLIENT_URLS]
+  .flatMap((value) => String(value || "").split(","))
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "12mb" }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -40,6 +58,7 @@ const defaultMongoHosts = [
 ].join(",");
 
 const uri =
+  process.env.MONGO_URI ||
   process.env.DB_URI ||
   `mongodb://${process.env.DB_USER}:${process.env.DB_PASS}@${process.env.DB_HOSTS || defaultMongoHosts}/bistroBossDB?tls=true&authSource=admin&retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -794,8 +813,12 @@ app.get("/", (req, res) => {
   res.send("Forkly Server is Running");
 });
 
+app.get("/health", (req, res) => {
+  res.status(200).send({ status: "ok" });
+});
+
 const server = app.listen(port, () => {
-  console.log(`Forkly backend is running on http://localhost:${port}`);
+  console.log(`Forkly backend is running on port ${port}`);
 });
 
 server.on("error", (error) => {
