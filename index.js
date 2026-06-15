@@ -31,15 +31,25 @@ const defaultRestaurantSettings = {
 
 const allowedOrigins = [process.env.CLIENT_URL, process.env.CLIENT_URLS]
   .flatMap((value) => String(value || "").split(","))
-  .map((value) => value.trim())
+  .map((value) => value.trim().replace(/^['"]|['"]$/g, "").replace(/\/$/, ""))
   .filter(Boolean);
 
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.length === 0) {
       return callback(null, true);
     }
 
+    const cleanOrigin = origin.trim().replace(/^['"]|['"]$/g, "").replace(/\/$/, "");
+
+    if (allowedOrigins.includes(cleanOrigin)) {
+      return callback(null, true);
+    }
+
+    console.warn(
+      `[CORS Blocked] Origin "${origin}" (cleaned: "${cleanOrigin}") is not allowed. ` +
+      `Allowed Origins: ${JSON.stringify(allowedOrigins)}`
+    );
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
